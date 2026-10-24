@@ -1,0 +1,122 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Estate overview</title></head>
+<body>
+<script src="anim.js"></script>
+<script>
+// Scene 1: four messy physical stores -> spaghetti -> one semantic interface.
+
+const headerA = group(svg);
+text(headerA, 48, 44, "The physical estate", { size: 28, weight: 700 });
+const headerB = group(svg);
+text(headerB, 48, 44, "One semantic interface over the estate", { size: 28, weight: 700 });
+
+const sub = (str, color) => { const g = group(svg); text(g, 48, 80, str, { size: 17, fill: color || C.muted }); return g; };
+const sub1 = sub("Four stores. Different identifiers, units and date conventions.");
+const sub2 = sub("Without a layer, every consumer re-learns every quirk and gets the joins wrong its own way.", C.bad);
+const sub3 = sub("One vocabulary for every consumer. Moving a table changes physical.yaml, never a query.", C.good);
+
+// ----------------------------------------------------------------- stores
+const STORES = [
+  { name: "OMS", tech: "Postgres", color: C.pg, tables: ["fund", "fund_manager", "holding"],
+    chips: ["key: SEDOL", "weights in %"], map: ["% → fraction", "SEDOL → security_id"] },
+  { name: "Data lake", tech: "Parquet", color: C.lake, tables: ["benchmark.parquet", "benchmark_constituents/", "  as_of_date=2026-09-30/"],
+    chips: ["key: ISIN", "per benchmark, not fund"], map: ["ISIN → security_id", "benchmark → fund bridge"] },
+  { name: "Security master", tech: "SQLite", color: C.sqlite, tables: ["security", "classification", "gics · credit_rating"],
+    chips: ["key: security_id", "text dates · GICS + ICB"], map: ["text → DATE", "scheme = 'GICS'"] },
+  { name: "Vendor feed", tech: "CSV", color: C.csv, tables: ["esg_ratings.csv"],
+    chips: ["key: ISIN", "YYYYMMDD · blank = open"], map: ["YYYYMMDD → DATE", "ISIN → security_id"] },
+];
+const CW = 255, GAP = 22, X0 = (1200 - (4 * CW + 3 * GAP)) / 2, CY = 455, CH = 192;
+STORES.forEach((s, i) => {
+  s.x = X0 + i * (CW + GAP);
+  s.cx = s.x + CW / 2;
+  const g = group(svg, { o: 0, y: 24 });
+  box(g, s.x, CY, CW, CH, { stroke: s.color + "88" });
+  el("rect", { x: s.x, y: CY, width: CW, height: 6, rx: 3, fill: s.color }, g);
+  text(g, s.x + 16, CY + 30, s.name, { size: 18, weight: 700 });
+  text(g, s.x + CW - 16, CY + 30, s.tech, { size: 14, fill: s.color, anchor: "end", weight: 600 });
+  s.tables.forEach((t, j) => text(g, s.x + 16, CY + 60 + j * 21, t, { size: 13, mono: true, fill: C.muted }));
+  s.chips.forEach((c, j) => chip(g, s.x + 16, CY + 128 + j * 32, c, s.color, { size: 13 }));
+  show(g, 0.6 + i * 0.45, 0.6, { y: 0 });
+});
+
+// ----------------------------------------------------------------- consumers
+const CONSUMERS = [{ name: "Analyst notebook", cx: 300 }, { name: "Dashboard", cx: 600 }, { name: "LLM agent", cx: 900 }];
+const consumers = group(svg);
+CONSUMERS.forEach((c) => {
+  box(consumers, c.cx - 95, 104, 190, 44, { fill: C.panel2, r: 22 });
+  text(consumers, c.cx, 127, c.name, { size: 16, weight: 600, anchor: "middle" });
+});
+
+// ----------------------------------------------------------------- spaghetti
+const spaghetti = [];
+CONSUMERS.forEach((c, i) => STORES.forEach((s, j) => {
+  const p = path(svg, `M${c.cx},150 C${c.cx},300 ${s.cx},300 ${s.cx},${CY - 4}`, C.bad, { sw: 1.8, dash: "" });
+  p.style.opacity = 0.7;
+  spaghetti.push(p);
+  drawIn(p, 4.6 + (i * 4 + j) * 0.06, 0.7);
+  set(p, { o: 0, draw: 0 }); show(p, 4.6 + (i * 4 + j) * 0.06, 0.1);
+}));
+
+// ----------------------------------------------------------------- layer
+const LX = X0, LW = 4 * CW + 3 * GAP;
+const phy = group(svg, { o: 0, y: 16 });
+box(phy, LX, 318, LW, 102, { fill: "#141B33", stroke: C.sem + "66" });
+text(phy, LX + 18, 336, "physical.yaml", { size: 15, weight: 700, fill: C.sem, mono: true });
+text(phy, LX + 150, 336, "where it lives and how it's shaped", { size: 14, fill: C.muted });
+const mapChips = [];
+STORES.forEach((s) => s.map.forEach((m, j) => {
+  const g = group(phy);
+  chip(g, s.x + 16, 354 + j * 32, m, s.color, { size: 13, mono: true });
+  mapChips.push(g);
+}));
+
+const sem = group(svg, { o: 0, y: 16 });
+box(sem, LX, 196, LW, 112, { fill: "#1A1840", stroke: C.sem });
+text(sem, LX + 18, 216, "semantic.yaml", { size: 15, weight: 700, fill: C.sem, mono: true });
+text(sem, LX + 150, 216, "what the data means", { size: 14, fill: C.muted });
+const vocab = [];
+let vx = LX + 18;
+["fund", "benchmark", "security", "time"].forEach((e) => {
+  const g = group(sem); const c = chip(g, vx, 236, e, C.sem, { size: 14, weight: 600 }); vx += c._w + 10; vocab.push(g);
+});
+text(sem, vx + 8, 250, "entities", { size: 13, fill: C.dim });
+vx = LX + 18;
+["active_weight", "active_share", "portfolio_rating_score", "market_value", "security.sector", "security.rating"].forEach((m, i) => {
+  const g = group(sem); const c = chip(g, vx, 270, m, i < 4 ? C.duck : C.text, { size: 13, mono: true }); vx += c._w + 10; vocab.push(g);
+});
+text(sem, vx + 8, 284, "metrics · dimensions", { size: 13, fill: C.dim });
+
+const storeLinks = STORES.map((s) => path(svg, `M${s.cx},${CY - 2} L${s.cx},422`, s.color, { sw: 3 }));
+const consumerLinks = CONSUMERS.map((c) => path(svg, `M${c.cx},150 L${c.cx},194`, C.good, { sw: 3 }));
+storeLinks.forEach((p) => set(p, { o: 0 }));
+consumerLinks.forEach((p) => set(p, { o: 0 }));
+
+// ----------------------------------------------------------------- timeline
+show(headerA, 0); show(sub1, 0.2);
+show(consumers, 3.8, 0.6);
+hide(sub1, 4.2); show(sub2, 4.6);
+
+spaghetti.forEach((p, i) => hide(p, 7.6 + i * 0.02, 0.5));
+hide(sub2, 7.6);
+
+show(phy, 8.2, 0.7, { y: 0 });
+storeLinks.forEach((p, i) => drawIn(p, 8.6 + i * 0.1, 0.5));
+mapChips.forEach((g, i) => show(g, 8.9 + i * 0.12, 0.4));
+
+show(sem, 10.4, 0.7, { y: 0 });
+vocab.forEach((g, i) => show(g, 10.8 + i * 0.1, 0.4));
+
+hide(headerA, 11.8, 0.3); show(headerB, 12.0);
+show(sub3, 12.2);
+consumerLinks.forEach((p, i) => drawIn(p, 12.2 + i * 0.12, 0.4));
+
+// data flowing: stores -> mapping -> semantic -> consumers
+for (let w = 0; w < 3; w++) {
+  const t = 12.8 + w * 1.4;
+  STORES.forEach((s, i) => packet(svg, path(svg, `M${s.cx},${CY - 2} L${s.cx},300`, "none"), s.color, t + i * 0.08, 0.7, 5));
+  CONSUMERS.forEach((c, i) => packet(svg, path(svg, `M${c.cx},194 L${c.cx},150`, "none"), C.good, t + 0.7 + i * 0.08, 0.4, 5));
+}
+hold(1.2);
+</script>
+</body></html>

@@ -1,0 +1,212 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Join graph</title></head>
+<body>
+<script src="anim.js"></script>
+<script>
+// Scene 3: how the layer decides joins. One base table, a graph of declared
+// relationships, and three different user queries each lighting up the path
+// the compiler generates. The third path is one-to-many and is refused.
+
+text(group(svg, { o: 1 }), 36, 40, "How the layer joins: the same way for every query", { size: 28, weight: 700 });
+const sub = (str, color) => { const g = group(svg); text(g, 36, 76, str, { size: 17, fill: color || C.muted }); return g; };
+
+// ----------------------------------------------------------------- graph
+const NODES = {
+  position:       { x: 36,  y: 296, w: 160, h: 104, color: C.sem, lines: ["one row per", "fund × security × date", "+ both weights"] },
+  fund:           { x: 280, y: 150, w: 160, h: 58, color: C.pg, lines: ["fund.code, fund.name"] },
+  benchmark:      { x: 482, y: 104, w: 160, h: 58, color: C.lake, lines: ["benchmark.name"] },
+  fund_manager:   { x: 482, y: 196, w: 160, h: 58, color: C.pg, lines: ["fund.portfolio_manager"] },
+  security:       { x: 280, y: 290, w: 160, h: 58, color: C.sqlite, lines: ["security.name, .country"] },
+  classification: { x: 280, y: 410, w: 160, h: 58, color: C.sqlite, lines: ["⏱ valid_from → valid_to"] },
+  gics:           { x: 482, y: 410, w: 160, h: 58, color: C.sqlite, lines: ["security.sector"] },
+  credit_rating:  { x: 280, y: 530, w: 160, h: 58, color: C.sqlite, lines: ["security.rating  ⏱"] },
+};
+const nodeG = {};
+for (const [name, n] of Object.entries(NODES)) {
+  const g = group(svg);
+  box(g, n.x, n.y, n.w, n.h, { fill: C.panel, stroke: n.color + "AA", r: 10 });
+  el("rect", { x: n.x, y: n.y + 8, width: 4, height: n.h - 16, rx: 2, fill: n.color }, g);
+  text(g, n.x + 16, n.y + 20, name, { size: 15, weight: 700, mono: true });
+  n.lines.forEach((l, i) => text(g, n.x + 16, n.y + 42 + i * 18, l, { size: 12.5, fill: C.muted }));
+  nodeG[name] = g;
+}
+const right = (n) => [NODES[n].x + NODES[n].w, NODES[n].y + NODES[n].h / 2];
+const left = (n) => [NODES[n].x, NODES[n].y + NODES[n].h / 2];
+const curve = ([x1, y1], [x2, y2]) => `M${x1},${y1} C${(x1 + x2) / 2},${y1} ${(x1 + x2) / 2},${y2} ${x2},${y2}`;
+
+const EDGES = {
+  "position>fund": ["position", "fund", "N:1"],
+  "position>security": ["position", "security", "N:1"],
+  "position>classification": ["position", "classification", "N:1"],
+  "position>credit_rating": ["position", "credit_rating", "N:1"],
+  "fund>benchmark": ["fund", "benchmark", "N:1"],
+  "fund>fund_manager": ["fund", "fund_manager", "1:N"],
+  "classification>gics": ["classification", "gics", "N:1"],
+};
+const edgeG = {}, edgeD = {};
+for (const [k, [a, b, card]] of Object.entries(EDGES)) {
+  const d = curve(right(a), left(b));
+  edgeD[k] = d;
+  const g = group(svg);
+  const bad = card === "1:N";
+  path(g, d, bad ? C.bad : C.dim, { sw: 2, dash: bad ? "6 5" : "" });
+  const [x2, y2] = left(b);
+  el("rect", { x: x2 - 40, y: y2 - 21, width: 32, height: 18, rx: 4, fill: C.bg }, g);
+  text(g, x2 - 24, y2 - 11, card, { size: 12, fill: bad ? C.bad : C.muted, anchor: "middle", weight: 700, mono: true });
+  edgeG[k] = g;
+}
+// nodes above edges
+for (const g of Object.values(nodeG)) svg.appendChild(g);
+
+function glow(names, edges, color, t, until) {
+  edges.forEach((k, i) => {
+    const p = path(svg, edgeD[k], color, { sw: 4.5 });
+    drawIn(p, t + i * 0.35, 0.45);
+    if (until) hide(p, until, 0.4);
+  });
+  names.forEach((n, i) => {
+    const N = NODES[n];
+    const g = group(svg);
+    box(g, N.x - 4, N.y - 4, N.w + 8, N.h + 8, { fill: color + "1A", stroke: color, sw: 2.5, r: 13 });
+    show(g, t + i * 0.35, 0.3); if (until) hide(g, until, 0.4);
+  });
+}
+
+// ----------------------------------------------------------------- right panel helpers
+const RX = 680, RW = 484;
+function panel(title, color) {
+  const g = group(svg);
+  box(g, RX, 104, RW, 540, { stroke: (color || C.line) + "AA" });
+  text(g, RX + 20, 132, title, { size: 18, weight: 700, fill: color || C.text });
+  return g;
+}
+const para = (g, x, y, lines, o = {}) => lines.forEach((l, i) => text(g, x, y + i * (o.lh || 22), l, { size: o.size || 15, fill: o.fill || C.muted, weight: o.weight }));
+function asks(g, y, dims) {
+  text(g, RX + 20, y, "user asks", { size: 12.5, fill: C.dim, weight: 600, ls: 0.5 });
+  text(g, RX + 20, y + 26, `dimensions = ${dims}`, { size: 15, mono: true, fill: KIND.dimensions, weight: 600 });
+}
+
+// stage 0: the base table
+const p0 = panel("Every query starts from one table", C.sem);
+para(p0, RX + 20, 166, ["The layer builds position from holdings (OMS) and", "the benchmark (lake): one row per fund × security", "× date, carrying both weights."]);
+code(p0, RX + 20, 262, [
+  { t: "fund    security  portfolio  benchmark", fill: C.dim },
+  "GLB_EQ  S0001     0.0164     0.0051",
+  "GLB_EQ  S0007     0.0786     0.0360",
+  { t: "GLB_EQ  S0005     0.0000     0.0968", hl: "0.0000", c: C.duck, tag: "not held" },
+  { t: "…       (60 rows on 2026-09-30)", fill: C.dim },
+], { size: 14, lh: 26, tagX: RX + 360 }).forEach((h) => show(h, 0, 0));
+para(p0, RX + 20, 420, ["Every metric is calculated from these rows.", "Every dimension is a join outward from them."], { fill: C.text, size: 16, lh: 26 });
+
+// stage 1: the relationships
+const p1 = panel("Everything else hangs off it", C.text);
+para(p1, RX + 20, 166, ["Relationships are declared once, in semantic.yaml:"]);
+code(p1, RX + 20, 208, [
+  "position → fund            N:1",
+  "position → security        N:1",
+  { t: "position → classification  N:1, as of date", hl: "as of date", c: KIND.as_of },
+  "classification → gics      N:1",
+  { t: "position → credit_rating   N:1, as of date", hl: "as of date", c: KIND.as_of },
+  "fund → benchmark           N:1",
+  { t: "fund → fund_manager        1:N", hl: "1:N", c: C.bad },
+], { size: 14, lh: 27, tagX: RX + 400 }).forEach((h) => show(h, 0, 0));
+para(p1, RX + 20, 420, ["N:1 means each position row matches at most one", "row on the other side, so the join can't duplicate it.", "", "1:N means a row can match many, so it would."], { size: 15, lh: 23 });
+
+// stage 2: query 1
+const p2 = panel("Query 1", KIND.dimensions);
+asks(p2, 162, '["security.sector"]');
+text(p2, RX + 20, 230, "the layer finds the path and generates the joins", { size: 12.5, fill: C.dim, weight: 600, ls: 0.5 });
+const h2 = code(p2, RX + 20, 260, [
+  "FROM position p",
+  "LEFT JOIN classification c",
+  "  ON  c.security_id = p.security_id",
+  { t: "  AND c.valid_from <= p.as_of_date", hl: "c.valid_from <= p.as_of_date", c: KIND.as_of, tag: "as of the date" },
+  { t: "  AND p.as_of_date < c.valid_to", hl: "p.as_of_date < c.valid_to", c: KIND.as_of },
+  "LEFT JOIN gics g",
+  "  ON  g.sub_industry_code = c.sub_industry_code",
+], { size: 14, lh: 25, tagX: RX + 350 });
+const ok2 = group(svg);
+text(ok2, RX + 20, 470, "✓ every step is N:1", { size: 17, fill: C.good, weight: 700 });
+para(ok2, RX + 20, 498, ["Each position appears once, so sector weights", "still add up to 100%."], { size: 15 });
+
+// stage 3: query 2
+const p3 = panel("Query 2", KIND.dimensions);
+asks(p3, 162, '["benchmark.name", "security.rating"]');
+text(p3, RX + 20, 230, "a different path, generated the same way", { size: 12.5, fill: C.dim, weight: 600, ls: 0.5 });
+const h3 = code(p3, RX + 20, 260, [
+  "FROM position p",
+  "LEFT JOIN fund f",
+  "  ON  f.fund_id = p.fund_id",
+  "LEFT JOIN benchmark b",
+  "  ON  b.benchmark_id = f.benchmark_id",
+  "LEFT JOIN credit_rating r",
+  "  ON  r.security_id = p.security_id",
+  { t: "  AND r.valid_from <= p.as_of_date", hl: "r.valid_from <= p.as_of_date", c: KIND.as_of, tag: "as of the date" },
+  { t: "  AND p.as_of_date < r.valid_to", hl: "p.as_of_date < r.valid_to", c: KIND.as_of },
+], { size: 14, lh: 23, tagX: RX + 350 });
+const ok3 = group(svg);
+text(ok3, RX + 20, 500, "✓ every step is N:1", { size: 17, fill: C.good, weight: 700 });
+para(ok3, RX + 20, 528, ["Different question, same base table, same rules.", "The credit rating used is the one valid on the position date."], { size: 15 });
+
+// stage 4: query 3, refused
+const p4 = panel("Query 3", C.bad);
+asks(p4, 162, '["fund.portfolio_manager"]');
+para(p4, RX + 20, 232, ["fund → fund_manager is 1:N: GLB_EQ has two PMs.", "Joining would copy every position row:"], { size: 15 });
+code(p4, RX + 20, 300, [
+  { t: "GLB_EQ  S0001  0.0164  × A. Patel", fill: C.text },
+  { t: "GLB_EQ  S0001  0.0164  × J. Okafor", fill: C.bad },
+  { t: "…  the fund now sums to 200%", fill: C.bad },
+], { size: 14, lh: 25 });
+const stamp = group(svg, { o: 0, s: 1.3 });
+box(stamp, RX + 20, 404, RW - 40, 112, { fill: C.bad + "1F", stroke: C.bad, sw: 2, r: 10 });
+text(stamp, RX + 38, 430, "REFUSED  ·  before any database is queried", { size: 15, weight: 800, fill: C.bad, ls: 0.5 });
+para(stamp, RX + 38, 458, ["QueryError: Dimension 'fund.portfolio_manager' is", "reached via a one-to-many relationship. Joining it", "would double count every additive metric."], { size: 13.5, fill: C.text, lh: 20 });
+
+// stage 5: summary
+const p5 = panel("What this gives the user", C.good);
+para(p5, RX + 20, 180, ["You name the dimensions.", "", "The layer picks the join path,", "adds the as-of conditions,", "and refuses paths that would double count."], { size: 18, fill: C.text, lh: 30 });
+para(p5, RX + 20, 380, ["One base table and one set of rules,", "so every query and every consumer", "gets the same, correct numbers."], { size: 16, lh: 26, fill: C.muted });
+
+// ----------------------------------------------------------------- timeline
+const T = { s0: 0, s1: 7.2, q1: 12.6, q2: 19.2, q3: 25.8, end: 32.4 };
+const subs = [
+  [sub("The base table: what every query is built from."), T.s0],
+  [sub("The join graph: how every attribute connects to that base table."), T.s1],
+  [sub("A user asks for sectors. The layer joins along the highlighted path."), T.q1],
+  [sub("A different question takes a different path, using the same rules."), T.q2],
+  [sub("A path that would duplicate rows is refused.", C.bad), T.q3],
+  [sub("Joins are derived from the model, never hand-written per query.", C.good), T.end],
+];
+subs.forEach(([g, t], i) => { show(g, t + 0.1, 0.35); if (subs[i + 1]) hide(g, subs[i + 1][1] - 0.15, 0.2); });
+
+const panels = [[p0, T.s0], [p1, T.s1], [p2, T.q1], [p3, T.q2], [p4, T.q3], [p5, T.end]];
+panels.forEach(([g, t], i) => { show(g, t + 0.2, 0.4); if (panels[i + 1]) hide(g, panels[i + 1][1] - 0.1, 0.3); });
+
+// stage 0: only the base table
+show(nodeG.position, 0.3, 0.5);
+glow(["position"], [], C.sem, 0.8, T.s1);
+
+// stage 1: graph grows outward
+const reveal = [["fund", "position>fund"], ["security", "position>security"], ["classification", "position>classification"],
+                ["credit_rating", "position>credit_rating"], ["benchmark", "fund>benchmark"], ["fund_manager", "fund>fund_manager"], ["gics", "classification>gics"]];
+reveal.forEach(([n, e], i) => { show(edgeG[e], T.s1 + 0.4 + i * 0.3, 0.4); show(nodeG[n], T.s1 + 0.5 + i * 0.3, 0.4); });
+
+// queries
+glow(["position", "classification", "gics"], ["position>classification", "classification>gics"], KIND.dimensions, T.q1 + 0.8, T.q2 - 0.2);
+h2.forEach((h, i) => show(h, T.q1 + 2.0 + i * 0.3, 0.3));
+show(ok2, T.q1 + 3.0, 0.4); hide(ok2, T.q2 - 0.1, 0.3);
+
+glow(["position", "fund", "benchmark", "credit_rating"], ["position>fund", "fund>benchmark", "position>credit_rating"], KIND.dimensions, T.q2 + 0.8, T.q3 - 0.2);
+h3.forEach((h, i) => show(h, T.q2 + 2.2 + i * 0.3, 0.3));
+show(ok3, T.q2 + 3.0, 0.4); hide(ok3, T.q3 - 0.1, 0.3);
+
+glow(["position", "fund", "fund_manager"], ["position>fund", "fund>fund_manager"], C.bad, T.q3 + 0.8, T.end - 0.2);
+tw(stamp, T.q3 + 2.8, 0.35, { o: 1, s: 1 }, "back");
+hide(stamp, T.end - 0.1, 0.3);
+
+// summary: every safe edge lights up
+glow(["position"], ["position>fund", "position>security", "position>classification", "position>credit_rating", "fund>benchmark", "classification>gics"],
+     C.good, T.end + 0.4, null);  // stays lit to the end
+hold(3.4);
+</script>
+</body></html>

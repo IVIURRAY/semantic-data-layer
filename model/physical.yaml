@@ -1,0 +1,118 @@
+# Physical mapping: WHERE the data lives and HOW it is shaped there.
+#
+# Each logical dataset (referenced by semantic.yaml) maps to one table/file in
+# one source. `table` defaults to the dataset name.
+#
+# `columns` lists the dataset's columns. A bare name means the source column
+# already has that name. A `name: expression` entry (in the source's own
+# dialect) is only needed where the source stores something differently:
+# percent -> fraction, text or YYYYMMDD dates, NULL meaning "still valid".
+# Those fixes happen here, at the edge, and never leak into the semantic model.
+#
+# ${VAR} is substituted from the environment.
+
+sources:
+  oms:
+    type: postgres
+    dsn: ${OMS_DSN}
+    description: Order management system - funds, PMs, end-of-day positions.
+  lake:
+    type: parquet
+    root: ${DATA_DIR}/lake
+    description: Data lake - benchmark reference data and constituents (hive-partitioned Parquet).
+  secmaster:
+    type: sqlite
+    path: ${DATA_DIR}/secmaster/secmaster.db
+    description: Security master - instruments, identifier crosswalk, classifications, credit ratings.
+  esg_vendor:
+    type: csv
+    path: ${DATA_DIR}/vendor/esg_ratings.csv
+    description: Vendor ESG ratings file drop.
+
+datasets:
+  # ---------------------------------------------------------------- OMS (Postgres)
+  fund:
+    source: oms
+    columns:
+      - fund_id
+      - fund_code: '"fund_id"'   # the OMS uses the fund code as its key
+      - fund_name
+      - strategy
+      - base_currency
+      - benchmark_id
+
+  fund_manager:
+    source: oms
+    columns: [fund_id, manager_name]
+
+  holding:
+    source: oms
+    columns:
+      - fund_id
+      - sedol
+      - as_of_date
+      - portfolio_weight: '"weight_percent" / 100.0'   # the OMS stores percent; the model uses fractions
+      - market_value
+    # The OMS knows securities by SEDOL. Resolve to the canonical id via the
+    # security master crosswalk.
+    identifiers:
+      security_id: {lookup: security, match_on: sedol}
+
+  # ---------------------------------------------------------------- Lake (Parquet)
+  benchmark:
+    source: lake
+    table: benchmark.parquet
+    columns: [benchmark_id, benchmark_name, provider]
+
+  benchmark_constituent:
+    source: lake
+    table: benchmark_constituents/*/*.parquet   # partitioned by as_of_date=YYYY-MM-DD
+    # Keyed by benchmark (not fund) and by ISIN (not security_id).
+    columns: [benchmark_id, isin, as_of_date, benchmark_weight]
+    identifiers:
+      security_id: {lookup: security, match_on: isin}
+
+  # ---------------------------------------------------------------- Security master (SQLite)
+  security:
+    source: secmaster
+    columns: [security_id, security_name, isin, sedol, country, region, currency]
+
+  classification:
+    source: secmaster
+    # The table holds two classification schemes. Mixing them would match each
+    # security twice, so keep GICS only.
+    where: "\"scheme\" = 'GICS'"
+    columns:
+      - security_id
+      - sub_industry_code: '"classification_code"'
+      - valid_from
+      - valid_to: "COALESCE(\"valid_to\", '9999-12-31')"   # NULL means still valid
+    types: {valid_from: DATE, valid_to: DATE}                 # SQLite stores dates as text
+
+  gics:
+    source: secmaster
+    columns: [sub_industry_code, sub_industry_name, industry_name, industry_group_name, sector_name]
+
+  credit_rating:
+    source: secmaster
+    # The table also holds short-term ratings (A-1, A-2, ...), which use a
+    # different scale. Keep issuer long-term ratings only.
+    where: "\"rating_term\" = 'LT'"
+    columns:
+      - security_id
+      - rating
+      - valid_from
+      - valid_to: "COALESCE(\"valid_to\", '9999-12-31')"   # NULL means still valid
+    types: {valid_from: DATE, valid_to: DATE}
+
+  # ---------------------------------------------------------------- Vendor (CSV)
+  esg_rating:
+    source: esg_vendor
+    columns:
+      - isin
+      - rating
+      # The vendor sends dates as YYYYMMDD, and a blank end date means still valid.
+      - valid_from: "strptime(\"valid_from\", '%Y%m%d')::DATE"
+      - valid_to: "COALESCE(strptime(NULLIF(\"valid_to\", ''), '%Y%m%d')::DATE, DATE '9999-12-31')"
+    identifiers:
+      security_id: {lookup: security, match_on: isin}

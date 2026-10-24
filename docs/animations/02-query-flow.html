@@ -1,0 +1,194 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Query flow</title></head>
+<body>
+<script src="anim.js"></script>
+<script>
+// Scene 2: what a query is, then exactly what the layer sends to each database.
+// SQL and returned rows are the real ones for this query on the seeded estate
+// (select lists trimmed; values shown inline rather than as bind parameters).
+
+text(group(svg, { o: 1 }), 36, 40, "Life of a query", { size: 28, weight: 700 });
+const sub = (str, color) => { const g = group(svg); text(g, 36, 76, str, { size: 17, fill: color || C.muted }); return g; };
+
+// ================================================================= part A: anatomy
+const A = group(svg);
+const AQ = [
+  ["dl.query(", C.text, null],
+  ['    metrics    = ["active_weight"],', KIND.metrics, ["metrics: what to calculate", "active_weight = portfolio weight − benchmark weight"]],
+  ['    dimensions = ["security.sector"],', KIND.dimensions, ["dimensions: how to break it down", "one result row per sector (like GROUP BY)"]],
+  ['    filters    = {"fund.code": "GLB_EQ"},', KIND.filters, ["filters: which subset", "only the Global Equity Fund"]],
+  ['    as_of      = "2026-09-30",', KIND.as_of, ["as_of: which date", "holdings, benchmark and sectors as they were that day"]],
+  [")", C.text, null],
+];
+const aw = charW(20);
+const aParts = AQ.map(([line, color, call], i) => {
+  const y = 152 + i * 56;
+  const g = group(A);
+  text(g, 60, y, line, { size: 20, mono: true, fill: color, weight: call ? 600 : 400 });
+  if (call) {
+    const lx = 60 + line.length * aw + 14;
+    el("line", { x1: lx, y1: y, x2: 668, y2: y, stroke: color, "stroke-width": 1.3, "stroke-dasharray": "3 5" }, g);
+    box(g, 672, y - 24, 492, 48, { fill: color + "14", stroke: color + "AA", r: 10 });
+    text(g, 688, y - 9, call[0], { size: 15.5, weight: 700, fill: color });
+    text(g, 688, y + 12, call[1], { size: 14, fill: C.muted });
+  }
+  return g;
+});
+const ans = group(A);
+box(ans, 60, 500, 560, 150, { fill: C.panel });
+text(ans, 78, 522, "the answer looks like this", { size: 13, fill: C.dim, weight: 600, ls: 0.5 });
+text(ans, 78, 552, "security.sector", { size: 15, mono: true, fill: KIND.dimensions, weight: 600 });
+text(ans, 600, 552, "active_weight", { size: 15, mono: true, fill: KIND.metrics, weight: 600, anchor: "end" });
+el("line", { x1: 78, y1: 566, x2: 600, y2: 566, stroke: C.line }, ans);
+[["Industrials", "+0.1426"], ["Materials", "+0.1109"], ["…", ""], ["Utilities", "−0.0842"]].forEach(([s, v], i) => {
+  text(ans, 78, 586 + i * 19, s, { size: 14, mono: true });
+  text(ans, 600, 586 + i * 19, v, { size: 14, mono: true, anchor: "end", fill: v.startsWith("−") ? C.bad : C.good });
+});
+const ansNote = group(A);
+text(ansNote, 672, 560, "one row per dimension value,", { size: 16, fill: C.text });
+text(ansNote, 672, 584, "one column per metric.", { size: 16, fill: C.text });
+text(ansNote, 672, 620, "No table names, no databases, no joins.", { size: 16, fill: C.muted });
+
+// ================================================================= part B: what gets sent
+const B = group(svg);
+box(B, 36, 104, 330, 150, { fill: C.panel });
+text(B, 52, 124, "the query", { size: 13, fill: C.dim, weight: 600, ls: 0.5 });
+[["dl.query(", C.text], ['  metrics=["active_weight"],', KIND.metrics], ['  dimensions=["security.sector"],', KIND.dimensions],
+ ['  filters={"fund.code": "GLB_EQ"},', KIND.filters], ['  as_of="2026-09-30")', KIND.as_of]]
+  .forEach(([l, c], i) => text(B, 52, 150 + i * 21, l, { size: 13.5, mono: true, fill: c }));
+
+text(B, 52, 284, "what the layer runs", { size: 13, fill: C.dim, weight: 600, ls: 0.5 });
+const STEPS = [
+  ["1", "OMS · Postgres", "the fund (from filters)", C.pg],
+  ["2", "Security master · SQLite", "identifier crosswalk", C.sqlite],
+  ["3", "OMS · Postgres", "portfolio weights", C.pg],
+  ["4", "Data lake · Parquet", "benchmark weights", C.lake],
+  ["5", "Security master · SQLite", "sectors on the date", C.sqlite],
+  ["–", "Vendor feed · CSV", "not needed", C.dim],
+  ["6", "DuckDB · in the layer", "join + calculate", C.duck],
+];
+const stepUI = STEPS.map(([n, store, what, color], i) => {
+  const y = 316 + i * 46;
+  const hl = group(B);
+  box(hl, 40, y - 21, 322, 42, { fill: color + "22", stroke: color, r: 8 });
+  el("circle", { cx: 62, cy: y, r: 12, fill: color + "33", stroke: color, "stroke-width": 1.4 }, B);
+  text(B, 62, y + 1, n, { size: 13, weight: 700, anchor: "middle", fill: color });
+  text(B, 84, y - 8, store, { size: 14, weight: 700, fill: n === "–" ? C.dim : C.text });
+  text(B, 84, y + 11, what, { size: 13, fill: C.muted });
+  const done = group(B);
+  text(done, 344, y, n === "–" ? "skip" : "✓", { size: n === "–" ? 12 : 16, fill: n === "–" ? C.dim : C.good, anchor: "end", weight: 700 });
+  return { hl, done };
+});
+
+// one big panel per database query
+const PX = 390, PW = 774;
+function panel(i, title, color, why, sqlLines, ret, o = {}) {
+  const g = group(svg);
+  box(g, PX, 104, PW, 540, { stroke: color + "AA" });
+  el("rect", { x: PX, y: 104, width: PW, height: 5, rx: 2.5, fill: color }, g);
+  text(g, PX + 22, 134, title, { size: 19, weight: 700, fill: color });
+  why.forEach((w, j) => text(g, PX + 22, 164 + j * 21, w, { size: 15, fill: C.muted }));
+  const sqlY = o.sqlY || 240;
+  text(g, PX + 22, sqlY - 26, o.sqlLabel || "SQL sent", { size: 12.5, fill: C.dim, weight: 600, ls: 0.5 });
+  const hls = code(g, PX + 22, sqlY, sqlLines, { size: o.size || 15, lh: o.lh, tagX: PX + 580 });
+  const r = group(svg);
+  const ry = o.retY || 480;
+  el("line", { x1: PX + 22, y1: ry - 26, x2: PX + PW - 22, y2: ry - 26, stroke: C.line }, r);
+  text(r, PX + 22, ry, o.retLabel || "rows returned to the layer", { size: 12.5, fill: C.dim, weight: 600, ls: 0.5 });
+  chip(r, PX + PW - 22 - (ret.count.length * 13 * 0.53 + 22), ry - 13, ret.count, C.good, { size: 13 });
+  ret.rows.forEach((row, j) => text(r, PX + 22, ry + 30 + j * 24, row, {
+    size: 14, mono: true, fill: j === 0 ? C.dim : (row.includes("not held") ? C.duck : C.text) }));
+  return { g, hls, r, i };
+}
+
+const F = KIND.filters, Mc = KIND.metrics, D = KIND.dimensions, AS = KIND.as_of;
+const P = [
+  panel(0, "Query 1 → OMS (Postgres)", C.pg,
+    ["The filter says fund.code = GLB_EQ. Look the fund up, and find which benchmark", "it's measured against: that decides which benchmark rows to fetch later."],
+    ['SELECT "fund_id",', '       "fund_name",', '       "benchmark_id"',
+     'FROM   "fund"', { t: "WHERE  \"fund_id\" IN ('GLB_EQ')", hl: "\"fund_id\" IN ('GLB_EQ')", c: F, tag: "filters" }],
+    { count: "1 row", rows: ["fund_id   fund_name            benchmark_id", "GLB_EQ    Global Equity Fund   IDX_GLB_ALL"] }),
+  panel(1, "Query 2 → Security master (SQLite)", C.sqlite,
+    ["The OMS identifies securities by SEDOL, the benchmark by ISIN. This table maps", "both to one security_id, so rows from different databases can be matched."],
+    [{ t: 'SELECT "security_id",', hl: '"security_id"', c: C.sem, tag: "one id for all sources" },
+     '       "isin",', '       "sedol",', '       "security_name"', 'FROM   "security"'],
+    { count: "60 rows", rows: ["security_id  isin          sedol    security_name", "S0001        US1043321819  BLF1026  Northwind Systems", "S0002        GB3863794023  BQFB849  Albion Energy"] }),
+  panel(2, "Query 3 → OMS (Postgres)", C.pg,
+    ["The portfolio side of active_weight: the fund's holdings on the date.", "The OMS stores weights in percent, so the layer converts them in the query."],
+    ['SELECT "fund_id",', '       "sedol",', '       "as_of_date",',
+     { t: '       "weight_percent" / 100.0 AS portfolio_weight', hl: '"weight_percent" / 100.0', c: Mc, tag: "metrics (stored as %)" },
+     'FROM   "holding"',
+     { t: "WHERE  \"fund_id\" IN ('GLB_EQ')", hl: "\"fund_id\" IN ('GLB_EQ')", c: F, tag: "filters" },
+     { t: "  AND  \"as_of_date\" = '2026-09-30'", hl: "\"as_of_date\" = '2026-09-30'", c: AS, tag: "as_of" }],
+    { count: "28 rows", rows: ["fund_id  sedol    as_of_date  portfolio_weight", "GLB_EQ   B0JYTK5  2026-09-30  0.0740", "GLB_EQ   B1VCLK8  2026-09-30  0.0210"] }),
+  panel(3, "Query 4 → Data lake (Parquet)", C.lake,
+    ["The benchmark side of active_weight. The benchmark id came back from query 1.", "Files are partitioned by date, so only one of the four files is read."],
+    ['SELECT "benchmark_id",', '       "isin",',
+     { t: '       "benchmark_weight"', hl: '"benchmark_weight"', c: Mc, tag: "metrics" },
+     "FROM   read_parquet('benchmark_constituents/*/*')",
+     { t: "WHERE  \"benchmark_id\" IN ('IDX_GLB_ALL')", hl: "\"benchmark_id\" IN ('IDX_GLB_ALL')", c: F, tag: "filters (via query 1)" },
+     { t: "  AND  \"as_of_date\" = '2026-09-30'", hl: "\"as_of_date\" = '2026-09-30'", c: AS, tag: "as_of" }],
+    { count: "60 rows · 1 of 4 files", rows: ["benchmark_id  isin          benchmark_weight", "IDX_GLB_ALL   CH2621745960  0.0230", "IDX_GLB_ALL   CH7662702895  0.0100"] }),
+  panel(4, "Query 5 → Security master (SQLite)", C.sqlite,
+    ["The dimension is security.sector. Sectors change over time, so fetch the", "classification that was valid on the date, then the sector names."],
+    ['SELECT "security_id",', '       "classification_code" AS sub_industry_code,',
+     '       "valid_from", "valid_to"', 'FROM   "classification"', "WHERE  \"scheme\" = 'GICS'",
+     { t: "  AND  \"valid_from\" <= '2026-09-30'", hl: "\"valid_from\" <= '2026-09-30'", c: AS, tag: "as_of" },
+     { t: "  AND  COALESCE(\"valid_to\", '9999-12-31') > '2026-09-30'", hl: "COALESCE(\"valid_to\", '9999-12-31') > '2026-09-30'", c: AS },
+     { t: 'then:  SELECT "sector_name" … FROM "gics"', hl: '"sector_name"', c: D, tag: "dimensions" }],
+    { count: "60 + 14 rows", rows: ["security_id  sub_industry_code  valid_from  valid_to", "S0001        50203010           2026-08-15  9999-12-31", "50203010  →  Communication Services"] },
+    { size: 14.5, lh: 24, retY: 490 }),
+  panel(6, "Query 6 → DuckDB (in memory, inside the layer)", C.duck,
+    ["The five results are loaded into DuckDB. One SQL statement matches them on", "security_id, joins the sectors and calculates the metric."],
+    ["WITH position AS (    -- one row per fund × security × date",
+     "  SELECT … FROM holdings  UNION ALL  SELECT … FROM benchmark",
+     "  GROUP BY fund_id, security_id, as_of_date)",
+     { t: 'SELECT gics.sector_name AS "security.sector",', hl: 'gics.sector_name AS "security.sector"', c: D, tag: "dimensions" },
+     { t: "       SUM(portfolio_weight) - SUM(benchmark_weight)", hl: "SUM(portfolio_weight) - SUM(benchmark_weight)", c: Mc, tag: "metrics" },
+     "         AS active_weight",
+     "FROM   position",
+     { t: "LEFT JOIN classification ON … AND date in valid range", hl: "date in valid range", c: AS, tag: "as_of" },
+     "LEFT JOIN gics ON …",
+     'GROUP BY "security.sector"'],
+    { count: "11 rows", rows: ["security.sector     active_weight", "Industrials         +0.1426", "Materials           +0.1109", "Utilities           −0.0842   (not held, still counted)"] },
+    { size: 14, lh: 23, sqlY: 240, retY: 506, sqlLabel: "SQL run in DuckDB", retLabel: "result returned to the user" }),
+];
+const skip = group(svg);
+box(skip, PX, 104, PW, 540, { stroke: C.dim, dash: "6 6" });
+text(skip, PX + PW / 2, 340, "Vendor feed (CSV): not queried", { size: 22, weight: 700, fill: C.muted, anchor: "middle" });
+text(skip, PX + PW / 2, 376, "Nothing in this query needs ESG ratings, so the file is never read.", { size: 16, fill: C.dim, anchor: "middle" });
+
+// ================================================================= timeline
+const subA1 = sub("First, the question. A query has four parts, all in business terms.");
+const subA2 = sub("Nothing in it says where the data lives. Next: what the layer sends to each database.");
+const subB = sub("Each colour shows which part of the query produced that piece of SQL.");
+const subEnd = sub("Five queries to three different stores, one join in DuckDB. The user wrote none of it.", C.good);
+
+show(A, 0, 0.01);
+show(subA1, 0.1);
+aParts.forEach((g, i) => show(g, 0.3 + (i === 0 ? 0 : i === 5 ? 0.1 : i * 1.15), 0.5));
+show(ans, 5.6, 0.5); show(ansNote, 6.2, 0.5);
+hide(subA1, 7.3, 0.2); show(subA2, 7.5);
+hide(A, 10.2, 0.5); hide(subA2, 10.2, 0.3);
+
+const TB = 10.7;
+show(B, TB, 0.5); show(subB, TB + 0.2);
+const DUR = [3.8, 3.6, 4.6, 4.6, 4.8, 1.8, 5.6];
+let t = TB + 0.4;
+const order = [P[0], P[1], P[2], P[3], P[4], "skip", P[5]];
+order.forEach((p, i) => {
+  const d = DUR[i];
+  show(stepUI[i].hl, t, 0.3); hide(stepUI[i].hl, t + d - 0.2, 0.25); show(stepUI[i].done, t + d - 0.2, 0.3);
+  if (p === "skip") { show(skip, t, 0.3); hide(skip, t + d - 0.2, 0.25); }
+  else {
+    show(p.g, t, 0.35);
+    p.hls.forEach((h, j) => show(h, t + 0.6 + j * 0.3, 0.3));
+    show(p.r, t + 0.9 + p.hls.length * 0.3, 0.4);
+    if (i < order.length - 1) { hide(p.g, t + d - 0.2, 0.25); hide(p.r, t + d - 0.2, 0.25); }
+  }
+  t += d;
+});
+hide(subB, t - 2.6, 0.3); show(subEnd, t - 2.4);
+hold(3.0);
+</script>
+</body></html>

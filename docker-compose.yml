@@ -1,0 +1,50 @@
+# One command brings up the whole "estate":
+#   oms-db  - Postgres, the OMS (a genuinely separate database server)
+#   seed    - one-shot job: populates the OMS and writes the lake (Parquet),
+#             security master (SQLite) and vendor feed (CSV) into a shared volume
+#   api     - the semantic layer, the only thing consumers talk to
+name: semlayer
+
+x-env: &env
+  OMS_DSN: postgresql://semlayer:semlayer@oms-db:5432/oms
+  DATA_DIR: /data
+
+services:
+  oms-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: semlayer
+      POSTGRES_PASSWORD: semlayer
+      POSTGRES_DB: oms
+    ports: ["55432:5432"]   # exposed for poking around; the API uses the internal network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U semlayer -d oms"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  seed:
+    build: .
+    image: semlayer:local
+    command: ["python", "-m", "semlayer.seed"]
+    environment: *env
+    volumes: [data:/data]
+    depends_on:
+      oms-db: {condition: service_healthy}
+
+  api:
+    build: .
+    image: semlayer:local
+    environment: *env
+    volumes: [data:/data]
+    ports: ["8000:8000"]
+    depends_on:
+      seed: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  data:

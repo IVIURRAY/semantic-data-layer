@@ -1,0 +1,255 @@
+# Semantic model: what the data MEANS.
+#
+# Nothing in this file knows which database a dataset lives in, what its
+# tables are called, or which identifier scheme it uses. That is all in
+# physical.yaml. Consumers of the data layer only ever see the names defined
+# here: entity dimensions (e.g. `security.sector`) and metrics (e.g.
+# `active_weight`).
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Fact: the single conformed grain everything is measured at.
+#
+# A "position" is (fund, security, date) and carries both the portfolio side
+# and the benchmark side. Inputs are combined with UNION ALL + GROUP BY, which
+# is a full outer join: a benchmark name the fund does not hold still produces
+# a row (portfolio_weight = 0, benchmark_weight > 0) and so a negative active
+# weight. Getting this wrong is the most common active-weight bug.
+# ---------------------------------------------------------------------------
+fact:
+  name: position
+  description: Portfolio vs benchmark position of a security in a fund on a business date.
+  grain: [fund_id, security_id, as_of_date]
+  time_column: as_of_date
+  # Every query is scoped to a set of funds. The scope dataset is loaded first
+  # and its keys are pushed down into the (much larger) fact sources.
+  scope:
+    dataset: fund
+  inputs:
+    - dataset: holding
+      measures: [portfolio_weight, market_value]
+      scope_column: fund_id          # holding.fund_id IN (<funds in scope>)
+    - dataset: benchmark_constituent
+      measures: [benchmark_weight]
+      scope_column: benchmark_id     # constituent.benchmark_id IN (<benchmarks of funds in scope>)
+      # Constituents are keyed by benchmark, not fund. The bridge allocates each
+      # constituent row to every in-scope fund measured against that benchmark.
+      bridge: {dataset: fund, key: benchmark_id}
+
+# ---------------------------------------------------------------------------
+# Relationships: the join graph, rooted at the fact.
+#
+# The compiler finds join paths here and refuses any path that crosses a
+# one_to_many edge, because that would fan out and double count weights.
+# ---------------------------------------------------------------------------
+relationships:
+  - {from: position.fund_id, to: fund.fund_id, cardinality: many_to_one}
+  - {from: fund.benchmark_id, to: benchmark.benchmark_id, cardinality: many_to_one}
+  - {from: position.security_id, to: security.security_id, cardinality: many_to_one}
+  # Slowly-changing attributes: joined point-in-time on the position date
+  # (valid_from <= as_of_date < valid_to), which keeps them many_to_one.
+  - from: position.security_id
+    to: classification.security_id
+    cardinality: many_to_one
+    point_in_time: {at: position.as_of_date, valid_from: valid_from, valid_to: valid_to}
+  - {from: classification.sub_industry_code, to: gics.sub_industry_code, cardinality: many_to_one}
+  - from: position.security_id
+    to: credit_rating.security_id
+    cardinality: many_to_one
+    point_in_time: {at: position.as_of_date, valid_from: valid_from, valid_to: valid_to}
+  - from: position.security_id
+    to: esg_rating.security_id
+    cardinality: many_to_one
+    point_in_time: {at: position.as_of_date, valid_from: valid_from, valid_to: valid_to}
+  # A fund can have several co-PMs. Declared so the compiler can explain why
+  # grouping weights by PM is refused, rather than silently double counting.
+  - {from: fund.fund_id, to: fund_manager.fund_id, cardinality: one_to_many}
+
+# ---------------------------------------------------------------------------
+# Entities and their dimensions (the business vocabulary).
+#
+# A dimension is backed by a column (or an expression over columns) of some
+# dataset. `dataset` defaults to the entity's own dataset. `identifies: true`
+# marks a dimension that uniquely identifies the entity, which matters for
+# additivity checks (grouping by fund.strategy still sums across funds).
+# ---------------------------------------------------------------------------
+entities:
+  fund:
+    dataset: fund
+    description: An investment portfolio managed against a benchmark.
+    dimensions:
+      code: {column: fund_code, identifies: true, description: Fund code, e.g. GLB_EQ.}
+      name: {column: fund_name, identifies: true, description: Fund display name.}
+      strategy: {column: strategy, description: Investment strategy label.}
+      base_currency: {column: base_currency, description: Fund base currency.}
+      portfolio_manager: {dataset: fund_manager, column: manager_name, description: Named PM (a fund may have several).}
+
+  benchmark:
+    dataset: benchmark
+    description: The index a fund is measured against.
+    dimensions:
+      code: {column: benchmark_id, identifies: true, description: Benchmark identifier.}
+      name: {column: benchmark_name, identifies: true, description: Benchmark display name.}
+      provider: {column: provider, description: Index provider.}
+
+  security:
+    dataset: security
+    description: A tradable instrument, resolved to one canonical id across all sources.
+    dimensions:
+      id: {column: security_id, identifies: true, description: Canonical internal security id.}
+      name: {column: security_name, identifies: true, description: Issuer / security name.}
+      isin: {column: isin, description: ISIN.}
+      sedol: {column: sedol, description: SEDOL.}
+      country: {column: country, description: Country of risk (ISO-2).}
+      region: {column: region, description: Region of risk.}
+      currency: {column: currency, description: Trading currency.}
+      # Classification hierarchy, point-in-time.
+      sector: {dataset: gics, column: sector_name, description: GICS sector (as of position date).}
+      industry_group: {dataset: gics, column: industry_group_name, description: GICS industry group (as of position date).}
+      industry: {dataset: gics, column: industry_name, description: GICS industry (as of position date).}
+      sub_industry: {dataset: gics, column: sub_industry_name, description: GICS sub-industry (as of position date).}
+      # Credit rating: what "rating" means to most of the business. Issuer
+      # long-term rating on the agency letter scale, point-in-time.
+      rating: {dataset: credit_rating, column: rating, description: "Issuer long-term credit rating, AAA..D (as of position date)."}
+      rating_score:
+        dataset: credit_rating
+        type: number
+        # Business rule, so it lives in the semantic layer, not the source mapping.
+        # One point per notch, higher is better, so weighted averages read naturally.
+        expr: "CASE {rating} WHEN 'AAA' THEN 22 WHEN 'AA+' THEN 21 WHEN 'AA' THEN 20 WHEN 'AA-' THEN 19 WHEN 'A+' THEN 18 WHEN 'A' THEN 17 WHEN 'A-' THEN 16 WHEN 'BBB+' THEN 15 WHEN 'BBB' THEN 14 WHEN 'BBB-' THEN 13 WHEN 'BB+' THEN 12 WHEN 'BB' THEN 11 WHEN 'BB-' THEN 10 WHEN 'B+' THEN 9 WHEN 'B' THEN 8 WHEN 'B-' THEN 7 WHEN 'CCC+' THEN 6 WHEN 'CCC' THEN 5 WHEN 'CCC-' THEN 4 WHEN 'CC' THEN 3 WHEN 'C' THEN 2 WHEN 'D' THEN 1 END"
+        description: Numeric credit score, one point per notch, AAA=22 .. D=1.
+      rating_grade:
+        dataset: credit_rating
+        expr: "CASE WHEN {rating} IN ('AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB+', 'BBB', 'BBB-') THEN 'Investment grade' WHEN {rating} IS NOT NULL THEN 'High yield' END"
+        description: Investment grade (BBB- and above) or High yield. Empty if unrated.
+      # ESG rating, point-in-time. A separate vendor and a separate scale. It is
+      # always prefixed esg_ so it is never mistaken for a credit rating, even
+      # though its letters (AAA..CCC) look like one.
+      esg_rating: {dataset: esg_rating, column: rating, description: Vendor ESG rating AAA..CCC (as of position date). Not a credit rating.}
+      esg_score:
+        dataset: esg_rating
+        type: number
+        expr: "CASE {rating} WHEN 'AAA' THEN 7 WHEN 'AA' THEN 6 WHEN 'A' THEN 5 WHEN 'BBB' THEN 4 WHEN 'BB' THEN 3 WHEN 'B' THEN 2 WHEN 'CCC' THEN 1 END"
+        description: Numeric ESG score, AAA=7 .. CCC=1.
+
+  time:
+    dataset: position
+    description: Business date of the position snapshot.
+    dimensions:
+      as_of_date: {column: as_of_date, identifies: true, description: Position date (month-end).}
+
+# ---------------------------------------------------------------------------
+# Metrics.
+#
+# Placeholders: {measure} is a column of the position fact, {entity.dim} is a
+# dimension (and pulls in whatever join it needs).
+#
+# non_additive lists the axes a metric must NOT be summed across:
+#   time - weights and market values are stocks, not flows
+#   fund - weights are relative to each fund's own NAV
+# The compiler rejects a query that would aggregate across one of these.
+# ---------------------------------------------------------------------------
+metrics:
+  market_value:
+    description: Market value of holdings in USD.
+    unit: USD
+    agg: sum
+    expr: "{market_value}"
+    non_additive: [time]
+
+  portfolio_weight:
+    description: Holding weight as a fraction of fund NAV.
+    unit: weight
+    agg: sum
+    expr: "{portfolio_weight}"
+    non_additive: [time, fund]
+
+  benchmark_weight:
+    description: Weight of the security in the fund's benchmark.
+    unit: weight
+    agg: sum
+    expr: "{benchmark_weight}"
+    non_additive: [time, fund]
+
+  active_weight:
+    description: Portfolio weight minus benchmark weight. Negative = underweight.
+    unit: weight
+    derived: "portfolio_weight - benchmark_weight"
+    non_additive: [time, fund]
+
+  active_share:
+    description: 0.5 x sum of |active weight| at security level. 0 = index-like, 1 = no overlap.
+    unit: weight
+    agg: sum
+    # Evaluated per security row before aggregation, so it is correct at any
+    # grouping: by sector it means that sector's contribution to active share.
+    expr: "0.5 * abs({portfolio_weight} - {benchmark_weight})"
+    non_additive: [time, fund]
+
+  holding_count:
+    description: Number of distinct securities held.
+    unit: count
+    agg: count_distinct
+    expr: "CASE WHEN {portfolio_weight} > 0 THEN {security_id} END"
+    non_additive: []
+
+  portfolio_rating_score:
+    description: Holding-weighted average credit score over rated holdings.
+    unit: score
+    ratio:
+      numerator: "{portfolio_weight} * {security.rating_score}"
+      denominator: "CASE WHEN {security.rating_score} IS NOT NULL THEN {portfolio_weight} END"
+    non_additive: [time, fund]
+
+  benchmark_rating_score:
+    description: Benchmark-weighted average credit score over rated constituents.
+    unit: score
+    ratio:
+      numerator: "{benchmark_weight} * {security.rating_score}"
+      denominator: "CASE WHEN {security.rating_score} IS NOT NULL THEN {benchmark_weight} END"
+    non_additive: [time, fund]
+
+  active_rating_score:
+    description: Portfolio minus benchmark weighted credit score.
+    unit: score
+    derived: "portfolio_rating_score - benchmark_rating_score"
+    non_additive: [time, fund]
+
+  rating_coverage:
+    description: Share of portfolio weight that has a credit rating.
+    unit: weight
+    ratio:
+      numerator: "CASE WHEN {security.rating_score} IS NOT NULL THEN {portfolio_weight} END"
+      denominator: "{portfolio_weight}"
+    non_additive: [time, fund]
+
+  portfolio_esg_score:
+    description: Holding-weighted average ESG score over ESG-rated holdings.
+    unit: score
+    ratio:
+      numerator: "{portfolio_weight} * {security.esg_score}"
+      denominator: "CASE WHEN {security.esg_score} IS NOT NULL THEN {portfolio_weight} END"
+    non_additive: [time, fund]
+
+  benchmark_esg_score:
+    description: Benchmark-weighted average ESG score over ESG-rated constituents.
+    unit: score
+    ratio:
+      numerator: "{benchmark_weight} * {security.esg_score}"
+      denominator: "CASE WHEN {security.esg_score} IS NOT NULL THEN {benchmark_weight} END"
+    non_additive: [time, fund]
+
+  active_esg_score:
+    description: Portfolio minus benchmark weighted ESG score.
+    unit: score
+    derived: "portfolio_esg_score - benchmark_esg_score"
+    non_additive: [time, fund]
+
+  esg_coverage:
+    description: Share of portfolio weight that has an ESG rating.
+    unit: weight
+    ratio:
+      numerator: "CASE WHEN {security.esg_score} IS NOT NULL THEN {portfolio_weight} END"
+      denominator: "{portfolio_weight}"
+    non_additive: [time, fund]

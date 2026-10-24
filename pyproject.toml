@@ -1,0 +1,27 @@
+[project]
+name = "semlayer"
+version = "0.1.0"
+description = "A small semantic layer over federated asset-management data"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb==2.0.0",
+    "pandas==3.1.0",
+    "pyarrow==26.0.0",
+    "psycopg[binary]==3.3.6",
+    "PyYAML==6.0.3",
+    "fastapi==0.162.0",
+    "uvicorn==0.54.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "httpx==0.28.1"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
