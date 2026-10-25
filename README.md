@@ -1,4 +1,4 @@
-# Asset management semantic layer
+# Portfolio Management Semantic Layer
 
 This is a small reference implementation of a **semantic layer over federated data**. You ask for metrics like `active_weight` by dimensions like `security.sector`. The layer figures out that:
 
